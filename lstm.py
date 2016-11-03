@@ -191,7 +191,6 @@ def main(filename):
   print("Reading input text from ", filename)
 
   lstm = LSTM() # create the nn
-
   lstm.reset_state()
   count = 0
   generation = 0
@@ -212,6 +211,9 @@ def main(filename):
       
       vrealoutput = lstm.train_a_slice(ecurr_char, enext_char)  
       i += depth
+
+  # Save what we learned
+  print(saver.save(session, saver_filename))
 
 if __name__ == '__main__':
   filename = sys.argv[1]
