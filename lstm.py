@@ -4,6 +4,7 @@ import sys
 
 hidden_state_size = 64
 input_size = 99
+depth = 1
 
 char_to_index = {9: 96,
                  10: 97,
@@ -12,7 +13,7 @@ index_to_char = {96: 9,
                  97: 10,
                  98: 11}
 
-def make_onehot(char):
+def get_onehot_index(char):
   o = ord(char)
   if o in char_to_index:
     index = char_to_index[o]
@@ -23,55 +24,50 @@ def make_onehot(char):
    index = o - 32
    assert 0 <= index < input_size, "ord is " + str(o)
 
-  output = np.zeros([1,input_size], dtype=np.float32)
-  output[0,index] = 1
+  return index
+
+def make_onehot(chars):
+  if len(chars) == depth:
+    output = np.zeros([depth,input_size], dtype=np.float32)
+    for i,c in enumerate(chars):
+      index = get_onehot_index(c)
+      output[i,index] = 1
+  else:
+    error("Got " + len(chars) + " characters, but expected " + depth)
+
   return output
+
+def get_onehot_char(index):
+  if index in index_to_char:
+   return chr(index_to_char[index])
+
+  return chr(index + 32)
+
  
-def unonehot(mat):
-  best_i = -1
-  best_v = -1
-  for row in mat:
-    for i, v in enumerate(row):
-      if v > best_v:
-        best_v = v
-        best_i = i
+def unonehot(mat, soft=False):
+  best_is =  [-1 for i in range(0,depth)]
+  if soft:
+    for r, row in enumerate(mat):
+      best_is[r] = np.random.choice(len(row), 1, p=row)[0]
+  else:
+    best_vs = [-1 for i in range(0,depth)] 
+    for r, row in enumerate(mat):
+      for i, v in enumerate(row):
+        if v > best_vs[r]:
+          best_vs[r] = v
+          best_is[r] = i
 
-  if best_i in index_to_char:
-   return index_to_char[best_i]
+  return [get_onehot_char(i) for i in best_is]
 
-  return chr(best_i + 32)
  
 # Returns new_state and output
-def create_LSTM_cell1(cprev_state, cprev_output, cinput):
-  return create_LSTM_cell(cprev_state, cprev_output, cinput)
-
-# Returns new_state and output
-def create_LSTM_cell2(cprev_state, cprev_output, cinput):
-  return create_LSTM_cell(cprev_state, cprev_output, cinput, is_=hidden_state_size)
-
-
-# Returns new_state and output
-def create_LSTM_cell(cprev_state, cprev_output, cinput, hss=hidden_state_size, is_=input_size):
-  concat_size = hss + is_
-
-  # Make the matrixes for generating weightings from prev_state/prev_output/input
-  cgen_memory_weights = tf.Variable(tf.random_normal((concat_size,hss)))
-  cgen_update_weights = tf.Variable(tf.random_normal((concat_size, hss)))
-  cgen_update_vec = tf.Variable(tf.random_normal((concat_size, hss)))
-  cgen_output_weights = tf.Variable(tf.random_normal((concat_size, hss)))
-
-  # Biases
-  cmemory_weights_bias = tf.Variable(tf.random_normal((1,hss)))
-  cupdate_weights_bias = tf.Variable(tf.random_normal((1,hss)))
-  cupdate_vec_bias = tf.Variable(tf.random_normal((1,hss)))
-  calmost_output_bias = tf.Variable(tf.random_normal((1,hss)))
-
+def create_LSTM_cell(layer, cprev_state, cprev_output, cinput):
   inputandoldoutput = tf.concat(1, [cprev_output, cinput])
 
-  cmemory_weights = tf.sigmoid(tf.add(tf.matmul(inputandoldoutput, cgen_memory_weights), cmemory_weights_bias))  
-  cupdate_weights = tf.sigmoid(tf.add(tf.matmul(inputandoldoutput, cgen_update_weights), cupdate_weights_bias))
-  cupdate_vec = tf.tanh(tf.add(tf.matmul(inputandoldoutput, cgen_update_vec), cupdate_vec_bias))
-  calmost_output_vec = tf.sigmoid(tf.add(tf.matmul(inputandoldoutput, cgen_output_weights), calmost_output_bias))
+  cmemory_weights = tf.sigmoid(tf.add(tf.matmul(inputandoldoutput, layer.cgen_memory_weights), layer.cmemory_weights_bias))  
+  cupdate_weights = tf.sigmoid(tf.add(tf.matmul(inputandoldoutput, layer.cgen_update_weights), layer.cupdate_weights_bias))
+  cupdate_vec = tf.tanh(tf.add(tf.matmul(inputandoldoutput, layer.cgen_update_vec), layer.cupdate_vec_bias))
+  calmost_output_vec = tf.sigmoid(tf.add(tf.matmul(inputandoldoutput, layer.cgen_output_weights), layer.calmost_output_bias))
 
   cweighted_state = tf.mul(cprev_state, cmemory_weights)
   cweighted_update = tf.mul(cupdate_vec, cupdate_weights)
@@ -80,63 +76,142 @@ def create_LSTM_cell(cprev_state, cprev_output, cinput, hss=hidden_state_size, i
 
   return cnewstate, coutput_vec 
 
+class Layer:
+  def __init__(self, i, cinput):
+    self.hss = hidden_state_size
+    if i == 2:
+      self.is_=hidden_state_size
+    else:
+      self.is_=input_size
+    self.concat_size = self.hss + self.is_
+    self.cinput = cinput
+    self.vinitial_state = np.zeros([1,self.hss], dtype=np.float32)
+    self.vinitial_prev_output = np.zeros([1,self.hss], dtype=np.float32)
+    self.c_iprev_state = tf.placeholder(tf.float32, shape=(1, self.hss))
+    self.c_iprev_output = tf.placeholder(tf.float32, shape=(1, self.hss))
+    self.newstate_output = []
+
+    # Make the matrixes for generating weightings from prev_state/prev_output/input
+    self.cgen_memory_weights = tf.Variable(tf.random_normal((self.concat_size,self.hss)))
+    self.cgen_update_weights = tf.Variable(tf.random_normal((self.concat_size, self.hss)))
+    self.cgen_update_vec = tf.Variable(tf.random_normal((self.concat_size, self.hss)))
+    self.cgen_output_weights = tf.Variable(tf.random_normal((self.concat_size, self.hss)))
+
+    # Biases
+    self.cmemory_weights_bias = tf.Variable(tf.random_normal((1,self.hss)))
+    self.cupdate_weights_bias = tf.Variable(tf.random_normal((1,self.hss)))
+    self.cupdate_vec_bias = tf.Variable(tf.random_normal((1,self.hss)))
+    self.calmost_output_bias = tf.Variable(tf.random_normal((1,self.hss)))
+
+
+    if i == 1:
+      self.newstate_output.append(create_LSTM_cell(self, self.c_iprev_state, self.c_iprev_output, tf.slice(self.cinput, [0,0], [1, self.is_])))
+      for stepi in range(1,depth):
+       self.newstate_output.append(create_LSTM_cell(self, *(self.newstate_output[-1]), tf.slice(self.cinput, [stepi,0], [1, self.is_])))
+    elif i == 2:
+      self.newstate_output.append(create_LSTM_cell(self, self.c_iprev_state, self.c_iprev_output, self.cinput[0][1]))
+      for stepi in range(1,depth):
+        self.newstate_output.append(create_LSTM_cell(self, *(self.newstate_output[-1]), self.cinput[0][1]))
+    else:
+      error("Unexpected layer number")
+    
+
+class LSTM:
+  def __init__(self):
+    ## Layer 1
+    self.layer1 = Layer(1, tf.placeholder(tf.float32, shape=(depth,input_size)))
+
+    ## Layer 2
+    self.layer2 = Layer(2, self.layer1.newstate_output)
+ 
+    # Gotta translate the output back into character probabilities
+    cgen_realoutput = tf.Variable(tf.random_normal((hidden_state_size, input_size))) 
+    creal_output_bias = tf.Variable(tf.random_normal((1, input_size)))
+    self.creal_outputs = []
+    for stepi in range(0,depth):
+      self.creal_outputs.append(tf.nn.softmax(tf.add(tf.matmul(self.layer2.newstate_output[stepi][1], cgen_realoutput), creal_output_bias)))
+    self.creal_output = tf.concat(0, self.creal_outputs)
+  
+    self.ccorrect = tf.placeholder(tf.float32, shape=(depth,input_size))
+    cost = -tf.reduce_mean(tf.reduce_sum(tf.mul(tf.log(self.creal_output),self.ccorrect))) 
+    self.train_step = tf.train.AdamOptimizer().minimize(cost)
+
+    self.session = tf.Session()
+    initializer = tf.initialize_all_variables()
+    self.session.run([initializer])
+
+    self.nodes_no_train = [*(self.layer1.newstate_output[-1]), *(self.layer2.newstate_output[-1]),self.creal_output]
+    self.nodes_with_train = [self.train_step] + self.nodes_no_train
+
+  def reset_state(self):
+    for layer in [self.layer1, self.layer2]:
+      layer.vnewstate = np.copy(layer.vinitial_state)
+      layer.voutput = np.copy(layer.vinitial_prev_output)
+    
+  def run(self, istraining, currchar, nextchar=None):
+    if istraining and nextchar != None:
+      _, self.layer1.vnewstate, self.layer1.voutput, self.layer2.vnewstate, self.layer2.voutput, vrealoutput = self.session.run(
+           self.nodes_with_train,
+           feed_dict={
+             self.layer1.cinput: currchar,
+             self.layer1.c_iprev_state: self.layer1.vnewstate,
+             self.layer1.c_iprev_output: self.layer1.voutput,
+             self.layer2.c_iprev_state: self.layer2.vnewstate,
+             self.layer2.c_iprev_output: self.layer2.voutput,
+             self.ccorrect: nextchar})
+    elif not istraining:
+      self.layer1.vnewstate, self.layer1.voutput, self.layer2.vnewstate, self.layer2.voutput, vrealoutput =  self.session.run(
+           self.nodes_no_train,
+           feed_dict={
+             self.layer1.cinput: currchar,
+             self.layer1.c_iprev_state: self.layer1.vnewstate,
+             self.layer1.c_iprev_output: self.layer1.voutput,
+             self.layer2.c_iprev_state: self.layer2.vnewstate,
+             self.layer2.c_iprev_output: self.layer2.voutput})
+    else:
+      error("invalid input to run")
+
+    return vrealoutput
+
+
+  def generate_a_sentence(self):
+    target_len = 100
+    output = []
+    output.append('A')
+    for i in range(1,target_len):
+      o = self.run(False, make_onehot([output[-1] for _ in range(0,depth)]))
+      output.append(unonehot(o, soft=True)[0])
+
+    return ''.join(output)
+
+  def train_a_slice(self, currchar, nextchar):
+    return self.run(True, currchar, nextchar=nextchar)
+
 def main(filename):
   print("Reading input text from ", filename)
 
-  ## Layer 1
-  cprev_state1 = tf.placeholder(tf.float32, shape=(1, hidden_state_size))
-  cprev_output1 = tf.placeholder(tf.float32, shape=(1, hidden_state_size))
-  vinitial_state1 = np.zeros([1,hidden_state_size], dtype=np.float32)
-  vinitial_prev_output1 = np.zeros([1,hidden_state_size], dtype=np.float32)
-  cinput1 = tf.placeholder(tf.float32, shape=(1,input_size))
-  cnew_state1, coutput1 = create_LSTM_cell1(cprev_state1, cprev_output1, cinput1)
+  lstm = LSTM() # create the nn
 
-  ## Layer 2
-  cprev_state2 = tf.placeholder(tf.float32, shape=(1, hidden_state_size))
-  cprev_output2 = tf.placeholder(tf.float32, shape=(1, hidden_state_size))
-  vinitial_state2 = np.zeros([1,hidden_state_size], dtype=np.float32)
-  vinitial_prev_output2 = np.zeros([1,hidden_state_size], dtype=np.float32)
-  cnew_state2, coutput2 = create_LSTM_cell2(cprev_state2, cprev_output2, coutput1)
-
-  # Gotta translate the output back into character probabilities
-  cgen_realoutput = tf.Variable(tf.random_normal((hidden_state_size, input_size))) 
-  creal_output_bias = tf.Variable(tf.random_normal((1, input_size)))
-  creal_output = tf.nn.softmax(tf.add(tf.matmul(coutput2, cgen_realoutput), creal_output_bias))
-
-  ccorrect = tf.placeholder(tf.float32, shape=(1,input_size))
-  cost = -tf.reduce_mean(tf.reduce_sum(tf.mul(tf.log(creal_output),ccorrect))) 
-  train_step = tf.train.AdamOptimizer().minimize(cost)
-
-  session = tf.Session()
-  initializer = tf.initialize_all_variables()
-  session.run([initializer])
-
-  vnewstate1 = np.copy(vinitial_state1)
-  voutput1 = np.copy(vinitial_prev_output1)
-  vnewstate2 = np.copy(vinitial_state2)
-  voutput2 = np.copy(vinitial_prev_output2)
+  lstm.reset_state()
   count = 0
+  generation = 0
   with open(filename, 'r') as f:
     text = f.read()
-    prev = text[0]
-    for char in text[1:]:
-      correct = make_onehot(char)
-      encoded = make_onehot(prev)
+    i = 1
+    while i < (len(text) - depth):
+      enext_char = make_onehot([text[j] for j in range(i,i+depth)])
+      ecurr_char = make_onehot([text[k] for k in range(i-1, i+depth-1)])
 
-      count += 1
-      if count > 300:
-        print()
+      count += depth 
+      if count > 100:
         count = 0
-        vnewstate1 = np.copy(vinitial_state1)
-        voutput1 = np.copy(vinitial_prev_output1)
-        vnewstate2 = np.copy(vinitial_state2)
-        voutput2 = np.copy(vinitial_prev_output2)
-
-        
-      _, vnewstate1, voutput1, vnewstate2, voutput2, vrealoutput =  session.run([train_step, cnew_state1,coutput1, cnew_state2,coutput2,creal_output], feed_dict={cinput1: encoded, cprev_state1: vnewstate1, cprev_output1: voutput1, cprev_state2: vnewstate2, cprev_output2: voutput2, ccorrect: correct})
-
-      print(unonehot(vrealoutput), end="")
-      prev = char
+        lstm.reset_state()
+        generation += 1
+        if generation % 10 == 0:
+          print(generation, ": ", lstm.generate_a_sentence())
+      
+      vrealoutput = lstm.train_a_slice(ecurr_char, enext_char)  
+      i += depth
 
 if __name__ == '__main__':
   filename = sys.argv[1]
