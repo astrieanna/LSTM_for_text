@@ -42,20 +42,29 @@ def unonehot(mat):
   return chr(best_i + 32)
  
 # Returns new_state and output
-def create_LSTM_cell(cprev_state, cprev_output, cinput):
-  concat_size = hidden_state_size + input_size
+def create_LSTM_cell1(cprev_state, cprev_output, cinput):
+  return create_LSTM_cell(cprev_state, cprev_output, cinput)
+
+# Returns new_state and output
+def create_LSTM_cell2(cprev_state, cprev_output, cinput):
+  return create_LSTM_cell(cprev_state, cprev_output, cinput, is_=hidden_state_size)
+
+
+# Returns new_state and output
+def create_LSTM_cell(cprev_state, cprev_output, cinput, hss=hidden_state_size, is_=input_size):
+  concat_size = hss + is_
 
   # Make the matrixes for generating weightings from prev_state/prev_output/input
-  cgen_memory_weights = tf.Variable(tf.random_normal((concat_size,hidden_state_size)))
-  cgen_update_weights = tf.Variable(tf.random_normal((concat_size, hidden_state_size)))
-  cgen_update_vec = tf.Variable(tf.random_normal((concat_size, hidden_state_size)))
-  cgen_output_weights = tf.Variable(tf.random_normal((concat_size, hidden_state_size)))
+  cgen_memory_weights = tf.Variable(tf.random_normal((concat_size,hss)))
+  cgen_update_weights = tf.Variable(tf.random_normal((concat_size, hss)))
+  cgen_update_vec = tf.Variable(tf.random_normal((concat_size, hss)))
+  cgen_output_weights = tf.Variable(tf.random_normal((concat_size, hss)))
 
   # Biases
-  cmemory_weights_bias = tf.Variable(tf.random_normal((1,hidden_state_size)))
-  cupdate_weights_bias = tf.Variable(tf.random_normal((1,hidden_state_size)))
-  cupdate_vec_bias = tf.Variable(tf.random_normal((1,hidden_state_size)))
-  calmost_output_bias = tf.Variable(tf.random_normal((1,hidden_state_size)))
+  cmemory_weights_bias = tf.Variable(tf.random_normal((1,hss)))
+  cupdate_weights_bias = tf.Variable(tf.random_normal((1,hss)))
+  cupdate_vec_bias = tf.Variable(tf.random_normal((1,hss)))
+  calmost_output_bias = tf.Variable(tf.random_normal((1,hss)))
 
   inputandoldoutput = tf.concat(1, [cprev_output, cinput])
 
@@ -67,26 +76,32 @@ def create_LSTM_cell(cprev_state, cprev_output, cinput):
   cweighted_state = tf.mul(cprev_state, cmemory_weights)
   cweighted_update = tf.mul(cupdate_vec, cupdate_weights)
   cnewstate = tf.add(cweighted_state, cweighted_update)
-
   coutput_vec = tf.mul(calmost_output_vec, tf.tanh(cnewstate))
-
 
   return cnewstate, coutput_vec 
 
 def main(filename):
   print("Reading input text from ", filename)
 
-  cprev_state = tf.placeholder(tf.float32, shape=(1, hidden_state_size))
-  cprev_output = tf.placeholder(tf.float32, shape=(1, hidden_state_size))
-  vinitial_state = np.zeros([1,hidden_state_size], dtype=np.float32)
-  vinitial_prev_output = np.zeros([1,hidden_state_size], dtype=np.float32)
-  cinput = tf.placeholder(tf.float32, shape=(1,input_size))
-  cnew_state, coutput = create_LSTM_cell(cprev_state, cprev_output, cinput)
+  ## Layer 1
+  cprev_state1 = tf.placeholder(tf.float32, shape=(1, hidden_state_size))
+  cprev_output1 = tf.placeholder(tf.float32, shape=(1, hidden_state_size))
+  vinitial_state1 = np.zeros([1,hidden_state_size], dtype=np.float32)
+  vinitial_prev_output1 = np.zeros([1,hidden_state_size], dtype=np.float32)
+  cinput1 = tf.placeholder(tf.float32, shape=(1,input_size))
+  cnew_state1, coutput1 = create_LSTM_cell1(cprev_state1, cprev_output1, cinput1)
+
+  ## Layer 2
+  cprev_state2 = tf.placeholder(tf.float32, shape=(1, hidden_state_size))
+  cprev_output2 = tf.placeholder(tf.float32, shape=(1, hidden_state_size))
+  vinitial_state2 = np.zeros([1,hidden_state_size], dtype=np.float32)
+  vinitial_prev_output2 = np.zeros([1,hidden_state_size], dtype=np.float32)
+  cnew_state2, coutput2 = create_LSTM_cell2(cprev_state2, cprev_output2, coutput1)
 
   # Gotta translate the output back into character probabilities
   cgen_realoutput = tf.Variable(tf.random_normal((hidden_state_size, input_size))) 
   creal_output_bias = tf.Variable(tf.random_normal((1, input_size)))
-  creal_output = tf.nn.softmax(tf.add(tf.matmul(coutput, cgen_realoutput), creal_output_bias))
+  creal_output = tf.nn.softmax(tf.add(tf.matmul(coutput2, cgen_realoutput), creal_output_bias))
 
   ccorrect = tf.placeholder(tf.float32, shape=(1,input_size))
   cost = -tf.reduce_mean(tf.reduce_sum(tf.mul(tf.log(creal_output),ccorrect))) 
@@ -96,8 +111,10 @@ def main(filename):
   initializer = tf.initialize_all_variables()
   session.run([initializer])
 
-  vnewstate = np.copy(vinitial_state)
-  voutput = np.copy(vinitial_prev_output)
+  vnewstate1 = np.copy(vinitial_state1)
+  voutput1 = np.copy(vinitial_prev_output1)
+  vnewstate2 = np.copy(vinitial_state2)
+  voutput2 = np.copy(vinitial_prev_output2)
   count = 0
   with open(filename, 'r') as f:
     text = f.read()
@@ -110,11 +127,13 @@ def main(filename):
       if count > 300:
         print()
         count = 0
-        vnewstate = np.copy(vinitial_state)
-        voutput = np.copy(vinitial_prev_output)
+        vnewstate1 = np.copy(vinitial_state1)
+        voutput1 = np.copy(vinitial_prev_output1)
+        vnewstate2 = np.copy(vinitial_state2)
+        voutput2 = np.copy(vinitial_prev_output2)
 
         
-      _, vnewstate, voutput, vrealoutput =  session.run([train_step, cnew_state,coutput,creal_output], feed_dict={cinput: encoded, cprev_state: vnewstate, cprev_output: voutput, ccorrect: correct})
+      _, vnewstate1, voutput1, vnewstate2, voutput2, vrealoutput =  session.run([train_step, cnew_state1,coutput1, cnew_state2,coutput2,creal_output], feed_dict={cinput1: encoded, cprev_state1: vnewstate1, cprev_output1: voutput1, cprev_state2: vnewstate2, cprev_output2: voutput2, ccorrect: correct})
 
       print(unonehot(vrealoutput), end="")
       prev = char
