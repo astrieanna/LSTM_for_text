@@ -2,7 +2,7 @@ import tensorflow as tf
 import numpy as np
 import sys
 
-hidden_state_size = 64
+hidden_state_size = 128
 input_size = 99
 depth = 1
 
@@ -44,8 +44,10 @@ def get_onehot_char(index):
   return chr(index + 32)
 
  
-def unonehot(mat, soft=False):
+def unonehot(mat, soft=False, verbose=False):
   best_is =  [-1 for i in range(0,depth)]
+  if verbose:
+    print(mat)
   if soft:
     for r, row in enumerate(mat):
       best_is[r] = np.random.choice(len(row), 1, p=row)[0]
@@ -117,11 +119,8 @@ class Layer:
     
 
 class LSTM:
-  def __init__(self):
-    ## Layer 1
+  def __init__(self, checkpoint_filename):
     self.layer1 = Layer(1, tf.placeholder(tf.float32, shape=(depth,input_size)))
-
-    ## Layer 2
     self.layer2 = Layer(2, self.layer1.newstate_output)
  
     # Gotta translate the output back into character probabilities
@@ -133,14 +132,20 @@ class LSTM:
     self.creal_output = tf.concat(0, self.creal_outputs)
   
     self.ccorrect = tf.placeholder(tf.float32, shape=(depth,input_size))
-    cost = -tf.reduce_mean(tf.reduce_sum(tf.mul(tf.log(self.creal_output),self.ccorrect))) 
+    cost = -tf.reduce_mean(tf.reduce_sum(tf.mul(tf.log(self.creal_output + tf.constant(1e-36)),self.ccorrect))) 
     self.train_step = tf.train.AdamOptimizer().minimize(cost)
 
     self.session = tf.Session()
     initializer = tf.initialize_all_variables()
     self.session.run([initializer])
 
-    self.nodes_no_train = [*(self.layer1.newstate_output[-1]), *(self.layer2.newstate_output[-1]),self.creal_output]
+    self.saver = tf.train.Saver()
+    self.saver_filename = "ALEX"
+    if checkpoint_filename != "":
+      print("Restoring from checkpoint")
+      self.saver.restore(self.session, checkpoint_filename)
+
+    self.nodes_no_train = [*(self.layer1.newstate_output[-1]), *(self.layer2.newstate_output[-1]), self.creal_output]
     self.nodes_with_train = [self.train_step] + self.nodes_no_train
 
   def reset_state(self):
@@ -173,24 +178,27 @@ class LSTM:
 
     return vrealoutput
 
+  def save(self):
+    return self.saver.save(self.session, self.saver_filename)
 
-  def generate_a_sentence(self):
+
+  def generate_a_sentence(self, c, verbose=False):
     target_len = 100
     output = []
-    output.append('A')
+    output.append(c)
     for i in range(1,target_len):
       o = self.run(False, make_onehot([output[-1] for _ in range(0,depth)]))
-      output.append(unonehot(o, soft=True)[0])
+      output.append(unonehot(o, soft=True, verbose=verbose)[0])
 
     return ''.join(output)
 
   def train_a_slice(self, currchar, nextchar):
     return self.run(True, currchar, nextchar=nextchar)
 
-def main(filename):
+def main(filename, checkpoint_filename):
   print("Reading input text from ", filename)
 
-  lstm = LSTM() # create the nn
+  lstm = LSTM(checkpoint_filename) # create the nn
   lstm.reset_state()
   count = 0
   generation = 0
@@ -207,15 +215,19 @@ def main(filename):
         lstm.reset_state()
         generation += 1
         if generation % 10 == 0:
-          print(generation, ": ", lstm.generate_a_sentence())
-      
+          print(generation, ": ", lstm.generate_a_sentence('A', verbose=False))
+        
       vrealoutput = lstm.train_a_slice(ecurr_char, enext_char)  
       i += depth
 
   # Save what we learned
-  print(saver.save(session, saver_filename))
+  print(lstm.save())
 
 if __name__ == '__main__':
-  filename = sys.argv[1]
-  main(filename)
+  input_filename = sys.argv[1]
+  if len(sys.argv) >= 3:
+    checkpoint_filename = sys.argv[2]
+  else:
+    checkpoint_filename = ""
+  main(input_filename, checkpoint_filename)
 
